@@ -122,6 +122,60 @@ router.post('/calls/dial', async (req, res) => {
 
     console.log(`[Telnyx] Outbound call initiated: ${from} → ${to} (agent: ${agentName})`);
 
+    // Start background poller to track call answered and call ended states in real-time
+    // (This guarantees live updates even on localhost where Telnyx webhooks cannot reach directly)
+    const io = req.app.get('io');
+    let hasAnnouncedAnswer = false;
+    let consecutiveFailures = 0;
+    const pollInterval = setInterval(async () => {
+      try {
+        const callCheck = await telnyx.calls.retrieve(callControlId);
+        const callData = callCheck?.data || {};
+        const isAlive = callData.is_alive;
+
+        if (isAlive) {
+          consecutiveFailures = 0;
+          if (!hasAnnouncedAnswer) {
+            hasAnnouncedAnswer = true;
+            callStore.markCallAnswered(callControlId);
+            if (io) {
+              io.emit('telnyx:call_answered', { callControlId, status: 'answered' });
+            }
+          }
+        } else if (isAlive === false) {
+          // Telnyx confirmed call is no longer alive / hung up
+          clearInterval(pollInterval);
+          const endedLog = callStore.markCallEnded(callControlId);
+          if (io) {
+            io.emit('telnyx:call_ended', {
+              callControlId,
+              callLogId: endedLog?.id,
+              durationSeconds: endedLog?.durationSeconds || 0,
+              dispositionRequired: true,
+            });
+          }
+        }
+      } catch (pollErr) {
+        consecutiveFailures++;
+        // If 404/422 repeated 3 times, the call session has been destroyed
+        if (consecutiveFailures >= 3) {
+          clearInterval(pollInterval);
+          const endedLog = callStore.markCallEnded(callControlId);
+          if (io) {
+            io.emit('telnyx:call_ended', {
+              callControlId,
+              callLogId: endedLog?.id,
+              durationSeconds: endedLog?.durationSeconds || 0,
+              dispositionRequired: true,
+            });
+          }
+        }
+      }
+    }, 2000);
+
+    // Safety timeout: stop polling after 30 minutes
+    setTimeout(() => clearInterval(pollInterval), 30 * 60 * 1000);
+
     res.json({
       success: true,
       data: {
@@ -159,6 +213,57 @@ router.post('/calls/dial', async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// 3b. GET /api/telnyx/calls/:callControlId/status
+//     Returns real-time status of a live call directly from Telnyx
+// ─────────────────────────────────────────────────────────────────────────────
+router.get('/calls/:callControlId/status', async (req, res) => {
+  const { callControlId } = req.params;
+
+  if (!callControlId) {
+    return res.status(400).json({ success: false, error: 'callControlId is required' });
+  }
+
+  if (callControlId.startsWith('call_')) {
+    const log = callStore.getCallByControlId(callControlId);
+    return res.json({
+      success: true,
+      data: {
+        is_alive: log?.status !== 'completed',
+        status: log?.status || 'active',
+      }
+    });
+  }
+
+  try {
+    const call = await telnyx.calls.retrieve(callControlId);
+    const isAlive = Boolean(call?.data?.is_alive);
+    const state = isAlive ? 'answered' : 'ended';
+
+    if (!isAlive && call?.data?.is_alive === false) {
+      callStore.markCallEnded(callControlId);
+    }
+
+    res.json({
+      success: true,
+      data: {
+        is_alive: isAlive,
+        status: state,
+        telnyxData: call?.data,
+      }
+    });
+  } catch (err) {
+    res.json({
+      success: true,
+      data: {
+        is_alive: true, // Keep alive on initial network hiccups
+        status: 'dialing',
+        error: err.message,
+      }
+    });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // 4. POST /api/telnyx/calls/action
 //    In-call controls: mute, hold, unhold, transfer, hangup, send_dtmf
 // ─────────────────────────────────────────────────────────────────────────────
@@ -178,7 +283,7 @@ router.post('/calls/action', async (req, res) => {
   }
 
   try {
-    const call = telnyx.calls(callControlId);
+    const call = new telnyx.Call({ id: callControlId });
     let result;
 
     switch (action) {

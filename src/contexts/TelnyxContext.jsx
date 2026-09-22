@@ -162,7 +162,7 @@ export const TelnyxProvider = ({ children }) => {
 
       const client = new TelnyxRTC({
         login_token: tokenData.token,
-        // Audio output — attach to a hidden <audio> element
+        remoteElement: 'telnyx-remote-audio',
       });
 
       // ── SDK Event Listeners ──────────────────────────────────────────────────
@@ -203,12 +203,19 @@ export const TelnyxProvider = ({ children }) => {
           if (state === 'active') {
             setCallState(CALL_STATE.ON_CALL);
             startCallTimer();
+            if (call?.remoteStream && remoteAudioRef.current) {
+              remoteAudioRef.current.srcObject = call.remoteStream;
+              remoteAudioRef.current.play().catch((e) => console.warn('Audio play error:', e));
+            }
           }
 
           if (state === 'hangup' || state === 'destroy') {
             stopCallTimer();
             setCallState(CALL_STATE.ENDED);
             setIncomingCall(null);
+            if (remoteAudioRef.current) {
+              remoteAudioRef.current.srcObject = null;
+            }
             setTimeout(() => {
               setCallState(CALL_STATE.IDLE);
               setActiveCall(null);
@@ -397,6 +404,13 @@ export const TelnyxProvider = ({ children }) => {
   return (
     <TelnyxContext.Provider value={value}>
       {children}
+      <audio
+        ref={remoteAudioRef}
+        id="telnyx-remote-audio"
+        autoPlay
+        playsInline
+        style={{ display: 'none' }}
+      />
     </TelnyxContext.Provider>
   );
 };

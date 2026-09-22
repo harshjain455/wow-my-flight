@@ -52,6 +52,15 @@ export const dialCall = async ({ to, from, agentId, agentName }) => {
 };
 
 /**
+ * Fetch real-time live status of a call
+ */
+export const fetchCallStatus = async (callControlId) => {
+  if (!callControlId) return null;
+  const response = await api.get(`/calls/${callControlId}/status`);
+  return response.data.data;
+};
+
+/**
  * Perform an in-call action: hangup | hold | unhold | mute | unmute | send_dtmf | transfer
  */
 export const callAction = async ({ callControlId, action, params = {} }) => {

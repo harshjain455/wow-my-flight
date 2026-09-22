@@ -33,7 +33,7 @@ export default function CallDispositionModal() {
     try {
       await saveCallDisposition({
         callId: dispositionPending.callId,
-        agentId: currentUser.id,
+        agentId: currentUser?.id || 'agent-1',
         disposition: selected,
         notes,
       });

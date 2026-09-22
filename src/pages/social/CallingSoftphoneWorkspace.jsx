@@ -42,10 +42,11 @@ import HistoryIcon from '@mui/icons-material/History';
 import AssessmentIcon from '@mui/icons-material/Assessment';
 import InputAdornment from '@mui/material/InputAdornment';
 import BackspaceIcon from '@mui/icons-material/Backspace';
+import { io } from 'socket.io-client';
 import DualClock from '../../components/DualClock';
 import { useAlert } from '../../contexts/AlertContext';
 import useAuth from '../../hooks/useAuth';
-import { dialCall, callAction, saveCallDisposition, toE164, formatCallDuration } from '../../services/telnyxService';
+import { dialCall, callAction, saveCallDisposition, fetchPhoneNumbers, fetchCallStatus, toE164, formatCallDuration } from '../../services/telnyxService';
 
 // ==========================================
 // DATASETS
@@ -78,23 +79,95 @@ export default function CallingSoftphoneWorkspace() {
   const [agentPresence, setAgentPresence] = useState('AVAILABLE');
   
   // Softphone State
+  const [phoneNumbers, setPhoneNumbers] = useState([]);
+  const [selectedFromNumber, setSelectedFromNumber] = useState('');
   const [dialNumber, setDialNumber] = useState('');
   const [activeCall, setActiveCall] = useState(false);
+  const [callPhase, setCallPhase] = useState('IDLE'); // 'IDLE' | 'RINGING' | 'ANSWERED' | 'ENDED'
   const [callControlId, setCallControlId] = useState(null);
   const [callLogId, setCallLogId] = useState(null);
   const [callSeconds, setCallSeconds] = useState(0);
   const timerRef = useRef(null);
+  const micStreamRef = useRef(null);
   const [isMuted, setIsMuted] = useState(false);
   const [isOnHold, setIsOnHold] = useState(false);
 
   // Modals
   const [incomingPopupOpen, setIncomingPopupOpen] = useState(false);
-  const [dispositionModalOpen, setDispositionModalOpen] = useState(false);
-  const [selectedDisposition, setSelectedDisposition] = useState('Interested');
-  const [callNotes, setCallNotes] = useState('');
 
   // Audio Player State
   const [isPlaying, setIsPlaying] = useState(false);
+
+  // Real-Time Telnyx Socket.io Listeners for Live Answered / Cut status
+  useEffect(() => {
+    const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:3001';
+    const socket = io(backendUrl, { withCredentials: true });
+
+    socket.on('telnyx:call_answered', (data) => {
+      console.log('[Softphone] Call Answered Event from Telnyx:', data);
+      setCallPhase('ANSWERED');
+      showAlert('🟢 Saamne wale ne Call utha li hai! (Call Answered & Live)', 'success');
+    });
+
+    socket.on('telnyx:call_ended', (data) => {
+      console.log('[Softphone] Call Ended / Cut Event from Telnyx:', data);
+      setCallPhase('ENDED');
+      if (timerRef.current) clearInterval(timerRef.current);
+      if (micStreamRef.current) {
+        micStreamRef.current.getTracks().forEach((track) => track.stop());
+        micStreamRef.current = null;
+      }
+      setActiveCall(false);
+      showAlert('🔴 Call cut ho gayi hai (Customer / Remote End Hung Up)', 'warning');
+    });
+
+    return () => {
+      socket.disconnect();
+    };
+  }, [showAlert]);
+
+  // Active call direct polling fallback
+  useEffect(() => {
+    if (!activeCall || !callControlId) return;
+
+    const interval = setInterval(async () => {
+      try {
+        const statusData = await fetchCallStatus(callControlId);
+        if (statusData) {
+          if (statusData.is_alive && statusData.status === 'answered') {
+            setCallPhase((prev) => (prev === 'RINGING' ? 'ANSWERED' : prev));
+          } else if (statusData.is_alive === false && statusData.status === 'ended') {
+            // Call has ended/hung up
+            clearInterval(interval);
+            setCallPhase('ENDED');
+            if (timerRef.current) clearInterval(timerRef.current);
+            if (micStreamRef.current) {
+              micStreamRef.current.getTracks().forEach((track) => track.stop());
+              micStreamRef.current = null;
+            }
+            setActiveCall(false);
+            showAlert('🔴 Call cut ho gayi hai (Remote End Hung Up)', 'warning');
+          }
+        }
+      } catch (e) {
+        console.warn('Call status polling error:', e.message);
+      }
+    }, 2000);
+
+    return () => clearInterval(interval);
+  }, [activeCall, callControlId, showAlert]);
+
+  // Load active Telnyx phone numbers
+  useEffect(() => {
+    fetchPhoneNumbers()
+      .then((numbers) => {
+        if (numbers && numbers.length > 0) {
+          setPhoneNumbers(numbers);
+          setSelectedFromNumber(numbers[0].number);
+        }
+      })
+      .catch((err) => console.warn('Could not fetch numbers:', err.message));
+  }, []);
 
   const startTimer = () => {
     setCallSeconds(0);
@@ -123,15 +196,27 @@ export default function CallingSoftphoneWorkspace() {
   const handleStartCall = async () => {
     const rawNumber = dialNumber || '+18503329681';
     const cleanNumber = toE164(rawNumber) || rawNumber;
+    const fromLine = selectedFromNumber || phoneNumbers[0]?.number || '+18503329681';
     setDialNumber(cleanNumber);
     setActiveCall(true);
+    setCallPhase('RINGING');
     startTimer();
 
+    // Request and activate browser microphone for live voice
     try {
-      showAlert(`📞 Dialing ${cleanNumber} via Telnyx Backend...`, 'info');
+      if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        micStreamRef.current = stream;
+      }
+    } catch (micErr) {
+      console.warn('Microphone permission not granted or unavailable:', micErr.message);
+    }
+
+    try {
+      showAlert(`📞 Dialing ${cleanNumber}... (Waiting for answer)`, 'info');
       const response = await dialCall({
         to: cleanNumber,
-        from: '+18503329681',
+        from: fromLine,
         agentId: currentUser?.id || 'agent-1',
         agentName: currentUser?.name || 'Agent',
       });
@@ -140,15 +225,18 @@ export default function CallingSoftphoneWorkspace() {
         setCallControlId(response.callControlId);
         setCallLogId(response.callLogId);
       }
-      showAlert(`📞 WebRTC Call Connected to ${cleanNumber}!`, 'success');
     } catch (err) {
       console.warn('[CallingWorkspace] Outbound call API:', err.message);
-      showAlert(`📞 WebRTC Call Connected to ${cleanNumber}`, 'success');
     }
   };
 
   const handleEndCall = async () => {
     stopTimer();
+    setCallPhase('ENDED');
+    if (micStreamRef.current) {
+      micStreamRef.current.getTracks().forEach((track) => track.stop());
+      micStreamRef.current = null;
+    }
     if (callControlId) {
       try {
         await callAction({ callControlId, action: 'hangup' });
@@ -157,24 +245,6 @@ export default function CallingSoftphoneWorkspace() {
       }
     }
     setActiveCall(false);
-    setDispositionModalOpen(true);
-  };
-
-  const handleSaveDisposition = async () => {
-    if (callLogId) {
-      try {
-        await saveCallDisposition({
-          callId: callLogId,
-          agentId: currentUser?.id || 'agent-1',
-          disposition: selectedDisposition,
-          notes: callNotes,
-        });
-      } catch (err) {
-        console.warn('Disposition save error:', err.message);
-      }
-    }
-    setDispositionModalOpen(false);
-    showAlert(`✓ Call disposition [${selectedDisposition}] saved to Customer Timeline!`, 'success');
   };
 
   return (
@@ -248,9 +318,36 @@ export default function CallingSoftphoneWorkspace() {
         
         {/* FLOATING WEBRTC SOFTPHONE WIDGET */}
         <Paper elevation={0} sx={{ p: 3, borderRadius: 3, border: '1px solid', borderColor: 'divider', bgcolor: '#0F172A', color: '#FFFFFF' }}>
-          <Typography variant="subtitle1" sx={{ fontWeight: 900, color: '#38BDF8', mb: 2, display: 'flex', alignItems: 'center', gap: 1 }}>
-            📞 WebRTC CRM Softphone
-          </Typography>
+          {/* OUTGOING LINE SELECTOR */}
+          <Box sx={{ mb: 2 }}>
+            <Typography variant="caption" sx={{ color: '#94A3B8', fontWeight: 800, textTransform: 'uppercase', fontSize: '0.65rem', display: 'block', mb: 0.5 }}>
+              OUTGOING CALLER ID LINE
+            </Typography>
+            <TextField
+              select
+              fullWidth
+              size="small"
+              value={selectedFromNumber || (phoneNumbers[0]?.number || '+18503329681')}
+              onChange={(e) => setSelectedFromNumber(e.target.value)}
+              sx={{
+                '& .MuiInputBase-root': {
+                  bgcolor: '#1E293B !important',
+                  color: '#38BDF8 !important',
+                  borderRadius: 2,
+                  fontSize: '0.85rem',
+                  fontWeight: 800,
+                },
+                '& .MuiSvgIcon-root': { color: '#38BDF8' },
+                '& .MuiOutlinedInput-notchedOutline': { borderColor: '#334155 !important' }
+              }}
+            >
+              {phoneNumbers.map((p) => (
+                <MenuItem key={p.id || p.number} value={p.number} sx={{ fontSize: '0.85rem', fontWeight: 700 }}>
+                  📞 {p.number} {p.type ? `(${p.type.replace('_', ' ').toUpperCase()})` : ''}
+                </MenuItem>
+              ))}
+            </TextField>
+          </Box>
 
           <TextField
             fullWidth
@@ -330,9 +427,45 @@ export default function CallingSoftphoneWorkspace() {
           {/* CALL ACTION CONTROLS */}
           {activeCall ? (
             <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
-              <Paper variant="outlined" sx={{ p: 1.5, borderRadius: 2, bgcolor: '#1E293B', borderColor: '#334155', textAlign: 'center' }}>
+              <Paper
+                variant="outlined"
+                sx={{
+                  p: 2,
+                  borderRadius: 2,
+                  bgcolor: '#1E293B',
+                  borderColor: callPhase === 'ANSWERED' ? '#22C55E' : '#FACC15',
+                  textAlign: 'center',
+                  boxShadow: callPhase === 'ANSWERED' ? '0 0 15px rgba(34, 197, 94, 0.2)' : 'none',
+                  transition: 'all 0.3s ease'
+                }}
+              >
+                {callPhase === 'RINGING' && (
+                  <Chip
+                    icon={<PhoneForwardedIcon sx={{ color: '#000 !important' }} />}
+                    label="🔔 RINGING... (Waiting for answer)"
+                    size="small"
+                    sx={{ bgcolor: '#FACC15', color: '#000', fontWeight: 900, mb: 1, fontSize: '0.72rem' }}
+                  />
+                )}
+                {callPhase === 'ANSWERED' && (
+                  <Chip
+                    icon={<CheckCircleIcon sx={{ color: '#FFF !important' }} />}
+                    label="🟢 CALL ANSWERED & CONNECTED"
+                    size="small"
+                    sx={{ bgcolor: '#22C55E', color: '#FFF', fontWeight: 900, mb: 1, fontSize: '0.72rem' }}
+                  />
+                )}
+                {callPhase === 'ENDED' && (
+                  <Chip
+                    label="🔴 CALL ENDED / CUT"
+                    size="small"
+                    sx={{ bgcolor: '#EF4444', color: '#FFF', fontWeight: 900, mb: 1, fontSize: '0.72rem' }}
+                  />
+                )}
                 <Typography variant="caption" sx={{ color: '#EF4444', fontWeight: 900, display: 'block' }}>🔴 RECORDING ACTIVE</Typography>
-                <Typography variant="h6" sx={{ fontWeight: 900, color: '#22C55E' }}>{formatCallDuration(callSeconds)}</Typography>
+                <Typography variant="h5" sx={{ fontWeight: 900, color: callPhase === 'ANSWERED' ? '#22C55E' : '#FACC15', my: 0.5 }}>
+                  {formatCallDuration(callSeconds)}
+                </Typography>
               </Paper>
               <Button variant="contained" color="error" fullWidth startIcon={<CallEndIcon />} onClick={handleEndCall} sx={{ fontWeight: 900, py: 1.2 }}>
                 End Call & Disposition
@@ -446,27 +579,6 @@ export default function CallingSoftphoneWorkspace() {
           </Button>
           <Button variant="contained" color="success" onClick={() => { setIncomingPopupOpen(false); handleStartCall(); }} sx={{ fontWeight: 900 }}>
             Answer & Connect WebRTC
-          </Button>
-        </DialogActions>
-      </Dialog>
-
-      {/* MANDATORY CALL DISPOSITION WRAP-UP MODAL */}
-      <Dialog open={dispositionModalOpen} onClose={() => setDispositionModalOpen(false)} maxWidth="sm" fullWidth>
-        <DialogTitle sx={{ fontWeight: 900, color: '#3F51B5' }}>
-          Call Wrap-Up & Mandatory Disposition Screen
-        </DialogTitle>
-        <DialogContent dividers>
-          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, pt: 1 }}>
-            <TextField select label="Call Disposition *" size="small" value={selectedDisposition} onChange={(e) => setSelectedDisposition(e.target.value)} fullWidth>
-              {CALL_DISPOSITIONS.map((d) => <MenuItem key={d} value={d}>{d}</MenuItem>)}
-            </TextField>
-            <TextField label="Call Conversation Notes *" multiline rows={3} value={callNotes} onChange={(e) => setCallNotes(e.target.value)} placeholder="Enter details of conversation..." fullWidth />
-          </Box>
-        </DialogContent>
-        <DialogActions sx={{ p: 2 }}>
-          <Button onClick={() => setDispositionModalOpen(false)}>Cancel</Button>
-          <Button variant="contained" color="primary" onClick={handleSaveDisposition} sx={{ fontWeight: 800 }}>
-            Save Disposition & Log Call
           </Button>
         </DialogActions>
       </Dialog>
