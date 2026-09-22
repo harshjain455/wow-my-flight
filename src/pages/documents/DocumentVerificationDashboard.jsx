@@ -1,0 +1,2 @@
+import SuperAdminDocumentVerificationDashboard from './SuperAdminDocumentVerificationDashboard';
+export default SuperAdminDocumentVerificationDashboard;

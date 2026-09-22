@@ -1,0 +1,187 @@
+@import "tailwindcss";
+
+:root {
+  --font-outfit: "Outfit", sans-serif;
+  --font-plus-jakarta: "Plus Jakarta Sans", sans-serif;
+
+  --font-size-h1: 1.5rem;
+  --font-size-h2: 1.35rem;
+  --font-size-h3: 1.2rem;
+  --font-size-h4: 1.05rem;
+  --font-size-h5: 0.85rem;
+  --font-size-h6: 0.75rem;
+  --font-size-body1: 0.825rem;
+  --font-size-body2: 0.775rem;
+}
+
+/* ─── RESET & BOX MODEL ─── */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  /* Prevent horizontal overflow / scrollbar on all screens */
+  overflow-x: hidden;
+  font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+}
+
+html {
+  /* Use dynamic viewport height so mobile browser chrome doesn't clip */
+  height: 100%;
+  height: -webkit-fill-available;
+}
+
+body {
+  min-height: 100vh;
+  min-height: 100dvh;
+  background-color: #F4F6F9;
+  color: #1E293B;
+}
+
+#root {
+  min-height: 100vh;
+  min-height: 100dvh;
+}
+
+html.dark-mode,
+body.dark-mode {
+  color-scheme: dark;
+  background-color: #070D19;
+  color: #F9FAFB;
+}
+
+/* ─── GLOBAL SCROLLBAR STYLES ─── */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: rgba(0, 0, 0, 0.02);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(15, 23, 42, 0.22);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(15, 23, 42, 0.4);
+}
+
+/* Firefox */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(15, 23, 42, 0.22) transparent;
+}
+
+/* Dark mode scrollbars */
+.dark-mode ::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.22);
+}
+
+.dark-mode ::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.4);
+}
+
+.dark-mode * {
+  scrollbar-color: rgba(255, 255, 255, 0.22) transparent;
+}
+
+/* ─── MODAL SCROLL UTILITY ─── */
+/* Apply to DialogContent / modal body for smooth, thin scroll */
+.modal-scroll {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+.modal-scroll::-webkit-scrollbar {
+  width: 4px;
+}
+
+.modal-scroll::-webkit-scrollbar-thumb {
+  background: rgba(15, 23, 42, 0.18);
+  border-radius: 4px;
+}
+
+/* ─── RESPONSIVE GRID UTILITIES ─── */
+/* 2-col grid that collapses to 1 on mobile */
+.grid-responsive-2 {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 1rem;
+}
+
+@media (min-width: 600px) {
+  .grid-responsive-2 {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+/* 3-col grid that collapses gracefully */
+.grid-responsive-3 {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 1rem;
+}
+
+@media (min-width: 600px) {
+  .grid-responsive-3 {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (min-width: 960px) {
+  .grid-responsive-3 {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+
+/* ─── TOUCH TARGETS ─── */
+/* Ensure all interactive elements meet 44px minimum tap target */
+button,
+[role="button"],
+input[type="checkbox"],
+input[type="radio"],
+select {
+  min-height: 36px;
+}
+
+/* ─── TABLE OVERFLOW SAFETY ─── */
+.table-responsive {
+  width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* ─── MARQUEE ANIMATION ─── */
+@keyframes marquee {
+  0% { transform: translateX(0%); }
+  100% { transform: translateX(-50%); }
+}
+
+.animate-marquee {
+  animation: marquee 25s linear infinite;
+}
+
+.animate-marquee:hover {
+  animation-play-state: paused;
+}
+
+/* ─── PREVENT CONTENT BLOWOUT ─── */
+/* Ensures no child can exceed its container width */
+img,
+video,
+iframe,
+svg {
+  max-width: 100%;
+}

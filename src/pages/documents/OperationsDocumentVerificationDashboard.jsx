@@ -1,0 +1,3 @@
+import SuperAdminDocumentVerificationDashboard from './SuperAdminDocumentVerificationDashboard';
+export const OperationsDocumentVerificationDashboard = SuperAdminDocumentVerificationDashboard;
+export default SuperAdminDocumentVerificationDashboard;
