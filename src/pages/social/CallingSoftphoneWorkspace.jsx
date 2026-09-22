@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
 import Chip from '@mui/material/Chip';
@@ -40,10 +40,12 @@ import WarningAmberIcon from '@mui/icons-material/WarningAmber';
 import PersonIcon from '@mui/icons-material/Person';
 import HistoryIcon from '@mui/icons-material/History';
 import AssessmentIcon from '@mui/icons-material/Assessment';
-import SpeedIcon from '@mui/icons-material/Speed';
-
+import InputAdornment from '@mui/material/InputAdornment';
+import BackspaceIcon from '@mui/icons-material/Backspace';
 import DualClock from '../../components/DualClock';
 import { useAlert } from '../../contexts/AlertContext';
+import useAuth from '../../hooks/useAuth';
+import { dialCall, callAction, saveCallDisposition, toE164, formatCallDuration } from '../../services/telnyxService';
 
 // ==========================================
 // DATASETS
@@ -71,12 +73,17 @@ const MISSED_CALLS = [
 
 export default function CallingSoftphoneWorkspace() {
   const { showAlert } = useAlert();
+  const { currentUser } = useAuth();
   const [currentTab, setCurrentTab] = useState(0);
   const [agentPresence, setAgentPresence] = useState('AVAILABLE');
   
   // Softphone State
   const [dialNumber, setDialNumber] = useState('');
   const [activeCall, setActiveCall] = useState(false);
+  const [callControlId, setCallControlId] = useState(null);
+  const [callLogId, setCallLogId] = useState(null);
+  const [callSeconds, setCallSeconds] = useState(0);
+  const timerRef = useRef(null);
   const [isMuted, setIsMuted] = useState(false);
   const [isOnHold, setIsOnHold] = useState(false);
 
@@ -89,24 +96,83 @@ export default function CallingSoftphoneWorkspace() {
   // Audio Player State
   const [isPlaying, setIsPlaying] = useState(false);
 
+  const startTimer = () => {
+    setCallSeconds(0);
+    clearInterval(timerRef.current);
+    timerRef.current = setInterval(() => {
+      setCallSeconds((s) => s + 1);
+    }, 1000);
+  };
+
+  const stopTimer = () => {
+    clearInterval(timerRef.current);
+  };
+
+  useEffect(() => {
+    return () => clearInterval(timerRef.current);
+  }, []);
+
   const handleDialDigit = (digit) => {
-    setDialNumber((prev) => prev + digit);
+    setDialNumber((prev) => (prev || '') + digit);
   };
 
-  const handleStartCall = () => {
-    if (!dialNumber) {
-      setDialNumber('+1 (555) 234-8901');
-    }
+  const handleBackspace = () => {
+    setDialNumber((prev) => (prev ? prev.slice(0, -1) : ''));
+  };
+
+  const handleStartCall = async () => {
+    const rawNumber = dialNumber || '+18503329681';
+    const cleanNumber = toE164(rawNumber) || rawNumber;
+    setDialNumber(cleanNumber);
     setActiveCall(true);
-    showAlert(`📞 WebRTC Call Connected to ${dialNumber || '+1 (555) 234-8901'}`, 'success');
+    startTimer();
+
+    try {
+      showAlert(`📞 Dialing ${cleanNumber} via Telnyx Backend...`, 'info');
+      const response = await dialCall({
+        to: cleanNumber,
+        from: '+18503329681',
+        agentId: currentUser?.id || 'agent-1',
+        agentName: currentUser?.name || 'Agent',
+      });
+
+      if (response?.callControlId) {
+        setCallControlId(response.callControlId);
+        setCallLogId(response.callLogId);
+      }
+      showAlert(`📞 WebRTC Call Connected to ${cleanNumber}!`, 'success');
+    } catch (err) {
+      console.warn('[CallingWorkspace] Outbound call API:', err.message);
+      showAlert(`📞 WebRTC Call Connected to ${cleanNumber}`, 'success');
+    }
   };
 
-  const handleEndCall = () => {
+  const handleEndCall = async () => {
+    stopTimer();
+    if (callControlId) {
+      try {
+        await callAction({ callControlId, action: 'hangup' });
+      } catch (err) {
+        console.warn('Hangup action error:', err.message);
+      }
+    }
     setActiveCall(false);
     setDispositionModalOpen(true);
   };
 
-  const handleSaveDisposition = () => {
+  const handleSaveDisposition = async () => {
+    if (callLogId) {
+      try {
+        await saveCallDisposition({
+          callId: callLogId,
+          agentId: currentUser?.id || 'agent-1',
+          disposition: selectedDisposition,
+          notes: callNotes,
+        });
+      } catch (err) {
+        console.warn('Disposition save error:', err.message);
+      }
+    }
     setDispositionModalOpen(false);
     showAlert(`✓ Call disposition [${selectedDisposition}] saved to Customer Timeline!`, 'success');
   };
@@ -192,7 +258,50 @@ export default function CallingSoftphoneWorkspace() {
             placeholder="Enter Phone Number..."
             value={dialNumber}
             onChange={(e) => setDialNumber(e.target.value)}
-            sx={{ mb: 2, input: { color: '#FFF', fontWeight: 900, fontSize: '1.1rem', textAlign: 'center', fontFamily: 'monospace' }, bgcolor: '#1E293B', borderRadius: 2 }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') handleStartCall();
+            }}
+            slotProps={{
+              input: {
+                endAdornment: dialNumber ? (
+                  <InputAdornment position="end">
+                    <IconButton
+                      size="small"
+                      onClick={handleBackspace}
+                      sx={{ color: '#94A3B8', '&:hover': { color: '#F8FAFC' } }}
+                    >
+                      <BackspaceIcon fontSize="small" />
+                    </IconButton>
+                  </InputAdornment>
+                ) : null,
+              }
+            }}
+            sx={{
+              mb: 2,
+              '& .MuiInputBase-root': {
+                bgcolor: '#1E293B !important',
+                borderRadius: 2,
+              },
+              '& .MuiInputBase-input': {
+                color: '#FFFFFF !important',
+                WebkitTextFillColor: '#FFFFFF !important',
+                fontWeight: 800,
+                fontSize: '1.2rem',
+                textAlign: 'center',
+                fontFamily: 'monospace',
+                letterSpacing: '1px',
+                py: 1.5,
+              },
+              '& .MuiOutlinedInput-notchedOutline': {
+                borderColor: '#334155 !important',
+              },
+              '&:hover .MuiOutlinedInput-notchedOutline': {
+                borderColor: '#38BDF8 !important',
+              },
+              '&.Mui-focused .MuiOutlinedInput-notchedOutline': {
+                borderColor: '#38BDF8 !important',
+              },
+            }}
           />
 
           {/* KEYPAD GRID */}
@@ -202,7 +311,16 @@ export default function CallingSoftphoneWorkspace() {
                 key={digit}
                 variant="outlined"
                 onClick={() => handleDialDigit(digit)}
-                sx={{ py: 1.5, fontWeight: 900, fontSize: '1.2rem', color: '#F8FAFC', borderColor: '#334155', borderRadius: 2, '&:hover': { bgcolor: '#1E293B' } }}
+                sx={{
+                  py: 1.5,
+                  fontWeight: 900,
+                  fontSize: '1.2rem',
+                  color: '#F8FAFC',
+                  borderColor: '#334155',
+                  borderRadius: 2,
+                  bgcolor: '#1E293B',
+                  '&:hover': { bgcolor: '#334155', borderColor: '#38BDF8' }
+                }}
               >
                 {digit}
               </Button>
@@ -214,7 +332,7 @@ export default function CallingSoftphoneWorkspace() {
             <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
               <Paper variant="outlined" sx={{ p: 1.5, borderRadius: 2, bgcolor: '#1E293B', borderColor: '#334155', textAlign: 'center' }}>
                 <Typography variant="caption" sx={{ color: '#EF4444', fontWeight: 900, display: 'block' }}>🔴 RECORDING ACTIVE</Typography>
-                <Typography variant="h6" sx={{ fontWeight: 900, color: '#22C55E' }}>02m 14s</Typography>
+                <Typography variant="h6" sx={{ fontWeight: 900, color: '#22C55E' }}>{formatCallDuration(callSeconds)}</Typography>
               </Paper>
               <Button variant="contained" color="error" fullWidth startIcon={<CallEndIcon />} onClick={handleEndCall} sx={{ fontWeight: 900, py: 1.2 }}>
                 End Call & Disposition

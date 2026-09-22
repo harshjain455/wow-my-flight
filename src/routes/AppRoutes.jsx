@@ -72,15 +72,10 @@ import OperationsActiveCases from '../pages/team/OperationsActiveCases';
 import AdminClosedCases from '../pages/clients/AdminClosedCases';
 import OperationsClosedCases from '../pages/clients/OperationsClosedCases';
 import AdminMarketing from '../pages/marketing/AdminMarketing';
-import OperationsMarketing from '../pages/marketing/OperationsMarketing';
 import AdminAgentsPerformance from '../pages/team/AdminAgentsPerformance';
 import OperationsAgentsPerformance from '../pages/team/OperationsAgentsPerformance';
-import StaffProfile from '../pages/team/StaffProfile';
-import AdminPaymentDashboard from '../pages/payments/AdminPaymentDashboard';
 import FinancePaymentDashboard from '../pages/payments/FinancePaymentDashboard';
 import InvoiceList from '../pages/payments/InvoiceList';
-import InvoiceDetails from '../pages/payments/InvoiceDetails';
-import Settings from '../pages/settings/Settings';
 import Suppliers from '../pages/suppliers/Suppliers';
 import AdminSocialInbox from '../pages/social/AdminSocialInbox';
 import OperationsSocialInbox from '../pages/social/OperationsSocialInbox';
@@ -88,11 +83,12 @@ import AgentSocialInbox from '../pages/social/AgentSocialInbox';
 import ClientIntakeForm from '../pages/public/ClientIntakeForm';
 import LeadIntakeForm from '../pages/public/LeadIntakeForm';
 import FlightDealReview from '../pages/public/FlightDealReview';
-
-import LandingPage from '../pages/public/LandingPage';
 import AdminDocumentVerificationDashboard from '../pages/documents/AdminDocumentVerificationDashboard';
 import OperationsDocumentVerificationDashboard from '../pages/documents/OperationsDocumentVerificationDashboard';
 
+import StaffProfile from '../pages/team/StaffProfile';
+import Settings from '../pages/settings/Settings';
+import InvoiceDetails from '../pages/payments/InvoiceDetails';
 import Agents from '../pages/team/Agents';
 import { TeamList } from '../pages/team/TeamList';
 import ActiveCases from '../pages/team/ActiveCases';
@@ -119,7 +115,6 @@ import SuperAdminRefundCommissionHub from '../pages/payments/SuperAdminRefundCom
 import SuperAdminStorageBackup from '../pages/documents/SuperAdminStorageBackup';
 import SuperAdminCustomization from '../pages/settings/SuperAdminCustomization';
 import FlexiblePermissionSystem from '../pages/settings/FlexiblePermissionSystem';
-import { PermissionGate } from '../components/PermissionGate';
 import Integrations from '../pages/integrations/Integrations';
 
 const getMenuLabelForPath = (path) => {
@@ -225,18 +220,12 @@ const ProtectedRoute = ({ children, allowedRoles }) => {
   const { isAuthenticated, currentUser, hasRole } = useAuth();
   const location = useLocation();
 
-  const logMsg = `[${new Date().toLocaleTimeString()}] Path: ${location.pathname}, Auth: ${isAuthenticated}, Role: ${currentUser?.role}, Allowed: ${allowedRoles?.join(',')}, hasRole: ${allowedRoles ? hasRole(allowedRoles) : 'N/A'}`;
-
-  const saved = localStorage.getItem('routing-debug-logs');
-  let logs = [];
-  try {
-    logs = saved ? JSON.parse(saved) : [];
-  } catch (e) {
-    logs = [];
-  }
-  logs.push(logMsg);
-  if (logs.length > 10) logs.shift();
-  localStorage.setItem('routing-debug-logs', JSON.stringify(logs));
+  // Dynamic Customization Check - Top level hook call
+  const { data: customizationSettings } = useQuery({
+    queryKey: ['customization-settings'],
+    queryFn: dbService.getCustomizationSettings,
+    enabled: !!isAuthenticated && !!currentUser,
+  });
 
   if (!isAuthenticated || !currentUser) {
     return <Navigate to="/login" replace />;
@@ -252,62 +241,48 @@ const ProtectedRoute = ({ children, allowedRoles }) => {
     return <Navigate to={`/${rolePrefix}/dashboard`} replace />;
   }
 
-  // Dynamic Customization Check
-  const { data: customizationSettings } = useQuery({
-    queryKey: ['customization-settings'],
-    queryFn: dbService.getCustomizationSettings
-  });
-
   if (currentUser && currentUser.role !== 'super_admin') {
-    try {
-      const currentMenuLabel = getMenuLabelForPath(location.pathname);
+    const currentMenuLabel = getMenuLabelForPath(location.pathname);
 
-      // Core management & operational routes are exempt from redirect loop
-      const EXEMPT_MENU_LABELS = [
-        'Dashboard',
-        'Priority Roadmap',
-        'Management Reports',
-        'Permission Control',
-        'SLA Management',
-        'Automation',
-        'Audit Trail',
-        'QA Audits',
-        'After-Sales',
-        'QA'
-      ];
+    // Core management & operational routes are exempt from redirect loop
+    const EXEMPT_MENU_LABELS = [
+      'Dashboard',
+      'Priority Roadmap',
+      'Management Reports',
+      'Permission Control',
+      'SLA Management',
+      'Automation',
+      'Audit Trail',
+      'QA Audits',
+      'After-Sales',
+      'QA'
+    ];
 
-      if (currentMenuLabel && !EXEMPT_MENU_LABELS.includes(currentMenuLabel)) {
-        // 1. Check individual custom permissions first (highest priority)
-        if (currentUser.customPermissions?.enabled) {
-          const allowedMenus = currentUser.customPermissions.menus || [];
-          if (!allowedMenus.includes(currentMenuLabel)) {
-            if (allowedMenus.length > 0) {
-              const firstAllowedLabel = allowedMenus[0];
-              const redirectPath = getDynamicRedirectPath(firstAllowedLabel, currentUser.role);
-              if (location.pathname !== redirectPath) {
-                return <Navigate to={redirectPath} replace />;
-              }
-            }
+    if (currentMenuLabel && !EXEMPT_MENU_LABELS.includes(currentMenuLabel)) {
+      // 1. Check individual custom permissions first (highest priority)
+      if (currentUser.customPermissions?.enabled) {
+        const allowedMenus = currentUser.customPermissions.menus || [];
+        if (!allowedMenus.includes(currentMenuLabel) && allowedMenus.length > 0) {
+          const firstAllowedLabel = allowedMenus[0];
+          const redirectPath = getDynamicRedirectPath(firstAllowedLabel, currentUser.role);
+          if (location.pathname !== redirectPath) {
+            return <Navigate to={redirectPath} replace />;
           }
-        } else if (customizationSettings) {
-          // 2. Fall back to role-level customization settings
-          const roleSettings = customizationSettings[currentUser.role];
-          if (roleSettings && roleSettings.menus) {
-            const allowedMenus = roleSettings.menus;
-            if (!allowedMenus.includes(currentMenuLabel)) {
-              if (allowedMenus.length > 0) {
-                const firstAllowedLabel = allowedMenus[0];
-                const redirectPath = getDynamicRedirectPath(firstAllowedLabel, currentUser.role);
-                if (location.pathname !== redirectPath) {
-                  return <Navigate to={redirectPath} replace />;
-                }
-              }
+        }
+      } else if (customizationSettings) {
+        // 2. Fall back to role-level customization settings
+        const roleSettings = customizationSettings[currentUser.role];
+        if (roleSettings && roleSettings.menus) {
+          const allowedMenus = roleSettings.menus;
+          if (!allowedMenus.includes(currentMenuLabel) && allowedMenus.length > 0) {
+            const firstAllowedLabel = allowedMenus[0];
+            const redirectPath = getDynamicRedirectPath(firstAllowedLabel, currentUser.role);
+            if (location.pathname !== redirectPath) {
+              return <Navigate to={redirectPath} replace />;
             }
           }
         }
       }
-    } catch (e) {
-      console.warn('Error checking dynamic route customization:', e);
     }
   }
 
